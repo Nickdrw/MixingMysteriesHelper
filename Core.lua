@@ -77,7 +77,7 @@ local STATE = {
 
 local DEFAULTS = {
     configVersion = 7,
-    debug = true,
+    debug = false,
     enabled = true,
     mixPreference = "balanced",
     ofiName = "Ofi the Sly",
