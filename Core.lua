@@ -83,10 +83,12 @@ local DEFAULTS = {
     ofiName = "Ofi the Sly",
     offeringName = "Mysterious Offering",
     showStatus = true,
+    showMinimapButton = true,
     anchor = "CENTER",
     relativeAnchor = "CENTER",
     x = 0,
     y = 180,
+    minimapAngle = 220,
 }
 
 local STEP_TEXT = {
@@ -107,7 +109,10 @@ local eventFrame = CreateFrame("Frame")
 local bindingOwner = CreateFrame("Frame", ADDON_NAME .. "BindingOwner", UIParent)
 local statusFrame
 local minimapButton
-local manualStatusOpen = false
+local manualStatusVisible
+local settingsCategoryID
+local settingsManualVisibilityCheckbox
+local settingsProximityCheckbox
 local targetOfiButton
 local targetOfferingButton
 local noopButton
@@ -154,6 +159,9 @@ local ApplyBinding
 local SetState
 local HandleGossipShow
 local ScheduleQuestStateRecovery
+local SetHelperWindowVisible
+local OpenAddonSettings
+local UpdateStatusActionButton
 
 local function Print(message)
     DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. message)
@@ -187,7 +195,7 @@ end
 
 local function GetConfiguredKeyLabel()
     local keys = GetConfiguredKeys()
-    return #keys > 0 and table.concat(keys, " / ") or "Unbound"
+    return #keys > 0 and table.concat(keys, " / ") or "?"
 end
 
 local function ExpandKeyBindingSection(sectionName)
@@ -666,15 +674,17 @@ UpdateStatus = function(note)
         return
     end
 
-    if not db.enabled or
-        (not db.showStatus and not manualStatusOpen) or
-        (not playerNearOfi and not manualStatusOpen) then
+    if not db.enabled or manualStatusVisible == false or
+        (manualStatusVisible ~= true and (not db.showStatus or not playerNearOfi)) then
         statusFrame:Hide()
         return
     end
 
     statusFrame:Show()
     statusFrame.title:SetText("Mixing Mysteries Helper  |cffaaaaaa[" .. GetConfiguredKeyLabel() .. "]|r")
+    if UpdateStatusActionButton then
+        UpdateStatusActionButton()
+    end
 
     local text = STEP_TEXT[state] or state
     if note then
@@ -917,11 +927,16 @@ local function CreateStatusFrame()
     end)
     statusFrame.reagentButton:SetScript("OnClick", ShowAuctionatorCopyDialog)
 
-    statusFrame.keybindButton = CreateFrame("Button", nil, statusFrame, "UIPanelButtonTemplate")
-    statusFrame.keybindButton:SetSize(108, 19)
-    statusFrame.keybindButton:SetPoint("TOPRIGHT", -8, -3)
-    statusFrame.keybindButton:SetText("Key bindings")
-    statusFrame.keybindButton:SetScript("OnClick", OpenKeyBindings)
+    statusFrame.actionButton = CreateFrame("Button", nil, statusFrame, "UIPanelButtonTemplate")
+    statusFrame.actionButton:SetSize(86, 19)
+    statusFrame.actionButton:SetPoint("TOPRIGHT", -28, -3)
+
+    statusFrame.closeButton = CreateFrame("Button", nil, statusFrame, "UIPanelCloseButton")
+    statusFrame.closeButton:SetSize(22, 22)
+    statusFrame.closeButton:SetPoint("TOPRIGHT", 2, 2)
+    statusFrame.closeButton:SetScript("OnClick", function()
+        SetHelperWindowVisible(false)
+    end)
 
     rewardButton = CreateFrame(
         "Button",
@@ -996,44 +1011,147 @@ local function CreateStatusFrame()
 
 end
 
+local function UpdateMinimapButtonPosition()
+    if not minimapButton then
+        return
+    end
+
+    local angle = math.rad(db.minimapAngle or DEFAULTS.minimapAngle)
+    local radius = (Minimap:GetWidth() / 2) + 10
+    local x = radius * math.cos(angle)
+    local y = radius * math.sin(angle)
+    minimapButton:ClearAllPoints()
+    minimapButton:SetPoint("CENTER", Minimap, "CENTER", x, y)
+end
+
+local function UpdateMinimapButtonVisibility()
+    if not minimapButton then
+        return
+    end
+
+    minimapButton:SetShown(db.showMinimapButton)
+end
+
+local function IsHelperWindowEnabled()
+    return manualStatusVisible == true or
+        (manualStatusVisible ~= false and db.showStatus)
+end
+
+local function SyncWindowVisibilityCheckboxes()
+    if settingsManualVisibilityCheckbox then
+        settingsManualVisibilityCheckbox:SetChecked(IsHelperWindowEnabled())
+    end
+    if settingsProximityCheckbox then
+        settingsProximityCheckbox:SetChecked(db.showStatus)
+    end
+end
+
+SetHelperWindowVisible = function(visible)
+    manualStatusVisible = visible
+    if not visible then
+        db.showStatus = false
+    end
+    UpdateStatus()
+    SyncWindowVisibilityCheckboxes()
+end
+
+local function ToggleManualStatusVisibility()
+    manualStatusVisible = not statusFrame:IsShown()
+    if not manualStatusVisible then
+        db.showStatus = false
+    end
+    UpdateStatus()
+    SyncWindowVisibilityCheckboxes()
+end
+
+OpenAddonSettings = function()
+    if Settings and Settings.OpenToCategory and settingsCategoryID then
+        Settings.OpenToCategory(settingsCategoryID)
+    end
+end
+
+UpdateStatusActionButton = function()
+    if not statusFrame or not statusFrame.actionButton then
+        return
+    end
+
+    if #GetConfiguredKeys() == 0 then
+        statusFrame.actionButton:SetText("Set keybind")
+        statusFrame.actionButton:SetScript("OnClick", OpenKeyBindings)
+    else
+        statusFrame.actionButton:SetText("Settings")
+        statusFrame.actionButton:SetScript("OnClick", OpenAddonSettings)
+    end
+end
+
 local function CreateMinimapButton()
     minimapButton = CreateFrame("Button", ADDON_NAME .. "MinimapButton", Minimap)
     minimapButton:SetSize(32, 32)
     minimapButton:SetFrameStrata("HIGH")
-    -- Keep the button on the outside edge of the map rather than covering
-    -- map content and the built-in minimap markers.
-    minimapButton:SetPoint("TOPLEFT", Minimap, "TOPLEFT", -12, 0)
-    minimapButton:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight", "ADD")
-    minimapButton:SetPushedTexture("Interface\\Buttons\\UI-Quickslot-Depress")
-    minimapButton.icon = minimapButton:CreateTexture(nil, "ARTWORK")
-    minimapButton.icon:SetSize(26, 26)
-    minimapButton.icon:SetPoint("CENTER")
-    minimapButton.icon:SetTexture("Interface\\AddOns\\MixingMysteriesHelper\\art\\mixing-mysteries-helper-curseforge-logo-256.jpg")
-    if minimapButton.icon.AddMaskTexture then
+    minimapButton:SetFrameLevel(Minimap:GetFrameLevel() + 10)
+    minimapButton:SetToplevel(true)
+    minimapButton:SetMovable(true)
+    minimapButton:SetClampedToScreen(true)
+
+    local overlay = minimapButton:CreateTexture(nil, "OVERLAY")
+    overlay:SetSize(53, 53)
+    overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    overlay:SetPoint("TOPLEFT")
+
+    local background = minimapButton:CreateTexture(nil, "BACKGROUND")
+    background:SetSize(24, 24)
+    background:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+    background:SetPoint("CENTER", 0, 1)
+
+    local icon = minimapButton:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(22, 22)
+    icon:SetTexture("Interface\\AddOns\\MixingMysteriesHelper\\art\\mixing-mysteries-helper-curseforge-logo-256.jpg")
+    icon:SetPoint("CENTER", 0, 1)
+    if icon.AddMaskTexture then
         local mask = minimapButton:CreateMaskTexture()
         mask:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask")
-        mask:SetAllPoints(minimapButton.icon)
-        minimapButton.icon:AddMaskTexture(mask)
+        mask:SetAllPoints(icon)
+        icon:AddMaskTexture(mask)
     end
-    minimapButton.border = minimapButton:CreateTexture(nil, "OVERLAY")
-    minimapButton.border:SetSize(32, 32)
-    minimapButton.border:SetPoint("CENTER")
-    minimapButton.border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+
+    minimapButton:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight", "ADD")
     minimapButton:EnableMouse(true)
-    minimapButton:RegisterForClicks("LeftButtonUp")
+    minimapButton:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    minimapButton:RegisterForDrag("LeftButton")
     minimapButton:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:SetText("Mixing Mysteries Helper")
-        GameTooltip:AddLine("Click to show or hide the helper window.", 0.75, 0.75, 0.75)
+        GameTooltip:AddLine("Left-click to show or hide the helper window.", 0.75, 0.75, 0.75)
+        GameTooltip:AddLine("Right-click to open settings.", 0.75, 0.75, 0.75)
+        GameTooltip:AddLine("Drag to reposition the minimap button.", 0.75, 0.75, 0.75)
         GameTooltip:Show()
     end)
     minimapButton:SetScript("OnLeave", function()
         GameTooltip:Hide()
     end)
-    minimapButton:SetScript("OnClick", function()
-        manualStatusOpen = not manualStatusOpen
-        UpdateStatus()
+    minimapButton:SetScript("OnClick", function(_, button)
+        if button == "RightButton" then
+            OpenAddonSettings()
+        else
+            ToggleManualStatusVisibility()
+        end
     end)
+    minimapButton:SetScript("OnDragStart", function(self)
+        self:SetScript("OnUpdate", function()
+            local minimapX, minimapY = Minimap:GetCenter()
+            local cursorX, cursorY = GetCursorPosition()
+            local scale = Minimap:GetEffectiveScale()
+            cursorX, cursorY = cursorX / scale, cursorY / scale
+            db.minimapAngle = math.deg(math.atan2(cursorY - minimapY, cursorX - minimapX))
+            UpdateMinimapButtonPosition()
+        end)
+    end)
+    minimapButton:SetScript("OnDragStop", function(self)
+        self:SetScript("OnUpdate", nil)
+    end)
+
+    UpdateMinimapButtonPosition()
+    UpdateMinimapButtonVisibility()
 end
 
 UpdateAchievementStatus = function()
@@ -2145,6 +2263,91 @@ local function SetEnabled(enabled)
         ApplyBinding()
         Print("Disabled; " .. GetConfiguredKeyLabel() .. " was restored to its normal binding.")
     end
+    UpdateStatus()
+end
+
+local function CreateSettingsPanel()
+    if not Settings or not Settings.RegisterCanvasLayoutCategory then
+        return
+    end
+
+    local panel = CreateFrame("Frame")
+    panel:SetSize(480, 245)
+
+    local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 16, -16)
+    title:SetText("Mixing Mysteries Helper")
+
+    local function AddCheckbox(y, label, getValue, setValue)
+        local checkbox = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+        checkbox:SetPoint("TOPLEFT", 18, y)
+        checkbox:SetSize(24, 24)
+
+        local text = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+        text:SetPoint("LEFT", checkbox, "RIGHT", 4, 0)
+        text:SetText(label)
+
+        checkbox:SetScript("OnClick", function(self)
+            setValue(self:GetChecked() and true or false)
+        end)
+
+        return checkbox, getValue
+    end
+
+    local enabledCheckbox, getEnabled = AddCheckbox(
+        -52,
+        "Enable Mixing Mysteries Helper",
+        function() return db.enabled end,
+        SetEnabled
+    )
+    local manualVisibilityCheckbox, getManualVisibility = AddCheckbox(
+        -82,
+        "Show the helper window",
+        IsHelperWindowEnabled,
+        SetHelperWindowVisible
+    )
+    settingsManualVisibilityCheckbox = manualVisibilityCheckbox
+    local proximityCheckbox, getProximityVisible = AddCheckbox(
+        -112,
+        "Show the helper window automatically when you are near Ofi the Sly.",
+        function() return db.showStatus end,
+        function(value)
+            db.showStatus = value
+            if value then
+                manualStatusVisible = true
+            end
+            RefreshOfiProximity(true)
+            SyncWindowVisibilityCheckboxes()
+        end
+    )
+    settingsProximityCheckbox = proximityCheckbox
+
+    local minimapCheckbox, getMinimapVisible = AddCheckbox(
+        -142,
+        "Show the minimap button",
+        function() return db.showMinimapButton end,
+        function(value)
+            db.showMinimapButton = value
+            UpdateMinimapButtonVisibility()
+        end
+    )
+
+    local keyBindingsButton = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    keyBindingsButton:SetSize(110, 22)
+    keyBindingsButton:SetPoint("TOPLEFT", 18, -178)
+    keyBindingsButton:SetText("Key bindings")
+    keyBindingsButton:SetScript("OnClick", OpenKeyBindings)
+
+    panel:SetScript("OnShow", function()
+        enabledCheckbox:SetChecked(getEnabled())
+        minimapCheckbox:SetChecked(getMinimapVisible())
+        proximityCheckbox:SetChecked(getProximityVisible())
+        manualVisibilityCheckbox:SetChecked(getManualVisibility())
+    end)
+
+    local category = Settings.RegisterCanvasLayoutCategory(panel, "Mixing Mysteries Helper")
+    Settings.RegisterAddOnCategory(category)
+    settingsCategoryID = category:GetID()
 end
 
 local function SetConfiguredName(field, value, label)
@@ -2195,12 +2398,15 @@ local function HandleSlashCommand(message)
     elseif command == "key" then
         Print("Configure the helper in Options > Key Bindings > AddOns.")
     elseif command == "show" then
+        manualStatusVisible = nil
         db.showStatus = true
         RefreshOfiProximity(true)
+        SyncWindowVisibilityCheckboxes()
     elseif command == "hide" then
-        manualStatusOpen = false
+        manualStatusVisible = false
         db.showStatus = false
         UpdateStatus()
+        SyncWindowVisibilityCheckboxes()
     elseif command == "ofi" then
         SetConfiguredName("ofiName", argument, "Ofi")
     elseif command == "offering" then
@@ -2243,6 +2449,7 @@ local function Initialize()
     db.showControls = nil
     db.key = nil
     db.configVersion = DEFAULTS.configVersion
+    manualStatusVisible = true
 
     db.ofiName = CleanName(db.ofiName)
     db.offeringName = CleanName(db.offeringName)
@@ -2252,6 +2459,7 @@ local function Initialize()
 
     CreateStatusFrame()
     CreateMinimapButton()
+    CreateSettingsPanel()
     UpdateAchievementStatus()
     RemoveLegacyActionMacro()
     db.rewardItemID = nil
