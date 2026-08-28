@@ -1,0 +1,8 @@
+## Interface: 120100
+## Title: Mixing Mysteries Helper
+## Notes: One-key helper for Ofi the Sly's Mixing Mysteries repeatable quest.
+## Author: Nico
+## Version: 1.8.7
+## SavedVariables: MixingMysteriesHelperDB
+
+Core.lua

@@ -1,0 +1,7 @@
+<Bindings>
+    <Binding
+        name="MIXINGMYSTERIESHELPER_ADVANCE"
+        category="BINDING_HEADER_MIXINGMYSTERIESHELPER">
+        MixingMysteriesHelperBinding()
+    </Binding>
+</Bindings>
