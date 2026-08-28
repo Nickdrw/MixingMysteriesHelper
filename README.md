@@ -4,12 +4,14 @@ This retail World of Warcraft addon turns the **Mixing Mysteries** farm into a
 single-key sequence while preserving Blizzard's protected-action rules. Every
 target or interaction still requires one physical key press.
 
-The default key is **F12**. Keep pressing it and the addon cycles through:
+The addon has no default key. Bind **Chain Actions** in the game's key-binding
+settings, then keep pressing your chosen key to cycle through:
 
 1. Target **Ofi the Sly**.
 2. Use WoW's protected **Interact With Target** binding.
-3. Select one of each offered ingredient automatically by default, falling
-   back to the first available ingredient if three different types are not present.
+3. Select an offered ingredient automatically, prioritizing recipes needed for
+   **Mysterious Mix Master**, then a balanced mix of one of each reagent, then
+   any available ingredient.
 4. Target **Mysterious Offering**.
 5. Use **Interact With Target** on the offering.
 6. Return to the first step after the quest/loot event.
@@ -29,35 +31,23 @@ names. Click it to open a preselected Auctionator shopping-list import; press
 **Ctrl+C** and paste it in Auctionator's Import window. It warns in chat when
 fewer than the required remaining reagents are available and pauses the gossip
 sequence until enough reagents are in the bags. Adding the missing reagents
-resumes an open Ofi dialog automatically. The panel only appears while the
-player is near Ofi the Sly and hides again after leaving her area.
+resumes an open Ofi dialog automatically. The panel is visible by default.
+In the addon settings, you can show or hide it manually and optionally show it
+automatically when you are near Ofi the Sly.
 
-Configure **Advance Mixing Mysteries** in **Options > Key Bindings > AddOns**.
-The game’s normal binding UI shows conflicts and lets you change or unbind the
-helper key. The **Key bindings** button on the helper panel opens that game page.
-There is no controls panel or action-bar macro.
+Configure **Chain Actions** in **Options > Key Bindings**. The game’s normal
+binding UI shows conflicts and lets you change or unbind the helper key. The
+helper panel opens the addon settings, where **Key bindings** opens that game page.
 
 ## Commands
 
-- `/mmh on` or `/mmh off`
-- `/mmh reset`
-- `/mmh sync` to rebuild the helper step from the current quest-log status
-- `/mmh show` to enable the proximity-based panel or `/mmh hide` to keep it hidden
-- `/mmh status`
-- `/mmh mix balanced` to prefer one of each offered ingredient
-- `/mmh mix first` to repeat the first ingredient option
-- `/mmh debug on` or `/mmh debug off`
-- `/mmh ofi <localized NPC name>`
-- `/mmh offering <localized NPC name>`
+- `/mmh help` to show available commands
+- `/mmh enable` or `/mmh disable`
+- `/mmh reset` to reset the sequence
+- `/mmh settings`
+- `/mmh show` or `/mmh hide`
 
-The status panel can be dragged with the left mouse button. Target names default
-to the English client names and can be changed with the commands above.
-
-On login, reload, enable, target changes, and quest-log updates, the helper
-checks whether Mixing Mysteries is absent, active, or ready for turn-in. It
-also uses a currently selected Ofi, a visible Ofi gossip window, or a selected
-Mysterious Offering to resume at the matching interaction step. This lets it
-recover when the quest was accepted or advanced before the addon was enabled.
+The status panel can be dragged with the left mouse button.
 
 ## Important limitation
 

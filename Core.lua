@@ -82,7 +82,7 @@ local DEFAULTS = {
     mixPreference = "balanced",
     ofiName = "Ofi the Sly",
     offeringName = "Mysterious Offering",
-    showStatus = true,
+    showStatus = false,
     showMinimapButton = true,
     anchor = "CENTER",
     relativeAnchor = "CENTER",
@@ -111,6 +111,7 @@ local statusFrame
 local minimapButton
 local manualStatusVisible
 local settingsCategoryID
+local settingsEnabledCheckbox
 local settingsManualVisibilityCheckbox
 local settingsProximityCheckbox
 local targetOfiButton
@@ -196,6 +197,21 @@ end
 local function GetConfiguredKeyLabel()
     local keys = GetConfiguredKeys()
     return #keys > 0 and table.concat(keys, " / ") or "?"
+end
+
+local function GetStepText(step)
+    local key = GetConfiguredKeyLabel()
+    if step == STATE.TARGET_OFI then
+        return "Press " .. key .. " to target Ofi the Sly"
+    elseif step == STATE.INTERACT_OFI then
+        return "Press " .. key .. " to interact with Ofi"
+    elseif step == STATE.TARGET_OFFERING then
+        return "Press " .. key .. " to target Mysterious Offering"
+    elseif step == STATE.INTERACT_OFFERING then
+        return "Press " .. key .. " to interact with the offering"
+    end
+
+    return STEP_TEXT[step] or step
 end
 
 local function ExpandKeyBindingSection(sectionName)
@@ -675,27 +691,28 @@ UpdateStatus = function(note)
     end
 
     if not db.enabled or manualStatusVisible == false or
-        (manualStatusVisible ~= true and (not db.showStatus or not playerNearOfi)) then
+        (db.showStatus and not playerNearOfi) then
         statusFrame:Hide()
         return
     end
 
     statusFrame:Show()
-    statusFrame.title:SetText("Mixing Mysteries Helper  |cffaaaaaa[" .. GetConfiguredKeyLabel() .. "]|r")
+    statusFrame.title:SetText("Mixing Mysteries Helper")
     if UpdateStatusActionButton then
         UpdateStatusActionButton()
     end
 
-    local text = STEP_TEXT[state] or state
+    local noteText
     if note then
-        text = text .. "  |cffaaaaaa" .. note .. "|r"
+        noteText = note
     elseif pendingBinding then
-        text = text .. "  |cffff6666(after combat)|r"
+        noteText = "(after combat)"
     end
 
-    statusFrame.step:SetText(text)
+    statusFrame.step:SetText(GetStepText(state))
     local color = STEP_COLOR[state] or { 1, 1, 1 }
     statusFrame.step:SetTextColor(color[1], color[2], color[3])
+    statusFrame.note:SetText(noteText or "")
 
     UpdateReagentStatus(false)
 end
@@ -879,7 +896,7 @@ end
 
 local function CreateStatusFrame()
     statusFrame = CreateFrame("Frame", ADDON_NAME .. "StatusFrame", UIParent, "BackdropTemplate")
-    statusFrame:SetSize(310, 90)
+    statusFrame:SetSize(310, 108)
     statusFrame:SetPoint(db.anchor, UIParent, db.relativeAnchor, db.x, db.y)
     statusFrame:SetClampedToScreen(true)
     statusFrame:SetMovable(true)
@@ -904,10 +921,18 @@ local function CreateStatusFrame()
     statusFrame.step:SetPoint("TOPRIGHT", -60, -27)
     statusFrame.step:SetJustifyH("LEFT")
 
+    statusFrame.note = statusFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    statusFrame.note:SetPoint("TOPLEFT", 12, -44)
+    statusFrame.note:SetPoint("TOPRIGHT", -60, -44)
+    statusFrame.note:SetJustifyH("LEFT")
+    statusFrame.note:SetTextColor(0.67, 0.67, 0.67)
+
     statusFrame.reagentButton = CreateFrame("Button", nil, statusFrame)
     -- Use opposing vertical anchors. The old BOTTOMLEFT/BOTTOMRIGHT pair had
     -- different y offsets, which created an invalid hit rectangle.
-    statusFrame.reagentButton:SetPoint("TOPLEFT", 7, -44)
+    -- Leave room for a second line of action progress, such as "opening" or
+    -- "mixing", without colliding with the reagent row.
+    statusFrame.reagentButton:SetPoint("TOPLEFT", 7, -61)
     statusFrame.reagentButton:SetPoint("BOTTOMRIGHT", -56, 20)
     statusFrame.reagentButton:EnableMouse(true)
     statusFrame.reagentButton:RegisterForClicks("LeftButtonUp")
@@ -1469,7 +1494,7 @@ local function ReleaseInputLockIfIdle(reason)
     end
 
     ApplyBinding()
-    Debug("F12 interaction binding restored: " .. reason .. ".")
+    Debug("Interaction binding reapplied to " .. GetConfiguredKeyLabel() .. ": " .. reason .. ".")
     return true
 end
 
@@ -1899,7 +1924,7 @@ HandleGossipShow = function()
     if not inputLocked then
         inputLocked = true
         ApplyBinding()
-        Debug("F12 locked to a no-op while Ofi's gossip is automated.")
+        Debug(GetConfiguredKeyLabel() .. " locked to a no-op while Ofi's gossip is automated.")
     end
 
     local availableQuests
@@ -2066,7 +2091,7 @@ local function ScheduleQuestAcceptanceWatchdog()
             UpdateStatus("retry quest acceptance")
         end
         Print("Quest acceptance was interrupted. Press " .. GetConfiguredKeyLabel() .. " to interact with Ofi and retry.")
-        Debug("Acceptance watchdog cleared the stale pending state and restored F12.")
+        Debug("Acceptance watchdog cleared the stale pending state and reapplied " .. GetConfiguredKeyLabel() .. ".")
     end)
 end
 
@@ -2254,6 +2279,9 @@ end
 
 local function SetEnabled(enabled)
     db.enabled = enabled
+    if settingsEnabledCheckbox then
+        settingsEnabledCheckbox:SetChecked(enabled)
+    end
     if enabled then
         RefreshOfiProximity(false)
         SetState(STATE.TARGET_OFI)
@@ -2261,7 +2289,7 @@ local function SetEnabled(enabled)
         Print("Enabled on " .. GetConfiguredKeyLabel() .. ".")
     else
         ApplyBinding()
-        Print("Disabled; " .. GetConfiguredKeyLabel() .. " was restored to its normal binding.")
+        Print("Disabled; the helper no longer overrides " .. GetConfiguredKeyLabel() .. ".")
     end
     UpdateStatus()
 end
@@ -2300,6 +2328,7 @@ local function CreateSettingsPanel()
         function() return db.enabled end,
         SetEnabled
     )
+    settingsEnabledCheckbox = enabledCheckbox
     local manualVisibilityCheckbox, getManualVisibility = AddCheckbox(
         -82,
         "Show the helper window",
@@ -2309,7 +2338,7 @@ local function CreateSettingsPanel()
     settingsManualVisibilityCheckbox = manualVisibilityCheckbox
     local proximityCheckbox, getProximityVisible = AddCheckbox(
         -112,
-        "Show the helper window automatically when you are near Ofi the Sly.",
+        "Only show the helper window when you are near Ofi the Sly.",
         function() return db.showStatus end,
         function(value)
             db.showStatus = value
@@ -2350,40 +2379,21 @@ local function CreateSettingsPanel()
     settingsCategoryID = category:GetID()
 end
 
-local function SetConfiguredName(field, value, label)
-    value = CleanName(value)
-    if value == "" then
-        Print(label .. " name cannot be empty.")
-        return
-    end
-
-    db[field] = value
-    UpdateTargetMacros()
-    ApplyBinding()
-    RefreshOfiProximity(true)
-    Print(label .. " target set to " .. value .. ".")
-end
-
 local function PrintHelp()
     Print("Commands:")
-    Print("  /mmh on | off - enable or disable the helper")
+    Print("  /mmh enable | disable")
     Print("  /mmh reset - restart at Target Ofi")
-    Print("  /mmh sync - rebuild the current step from the quest log")
-    Print("  Configure the helper in Options > Key Bindings > AddOns")
-    Print("  /mmh show | hide - enable or hide the proximity-based status panel")
-    Print("  /mmh ofi <name> - change Ofi's localized name")
-    Print("  /mmh offering <name> - change the offering's localized name")
-    Print("  Ingredient choice prioritizes missing Mysterious Mix Master variants, then one of each reagent.")
-    Print("  /mmh debug on | off - toggle detailed chat diagnostics")
+    Print("  /mmh settings - open the addon settings")
+    Print("  /mmh show | hide")
 end
 
 local function HandleSlashCommand(message)
     local command, argument = tostring(message or ""):match("^%s*(%S*)%s*(.-)%s*$")
     command = command:lower()
 
-    if command == "on" then
+    if command == "enable" then
         SetEnabled(true)
-    elseif command == "off" then
+    elseif command == "disable" then
         SetEnabled(false)
     elseif command == "reset" then
         ResetMixProgress()
@@ -2398,19 +2408,11 @@ local function HandleSlashCommand(message)
     elseif command == "key" then
         Print("Configure the helper in Options > Key Bindings > AddOns.")
     elseif command == "show" then
-        manualStatusVisible = nil
-        db.showStatus = true
-        RefreshOfiProximity(true)
-        SyncWindowVisibilityCheckboxes()
+        SetHelperWindowVisible(true)
     elseif command == "hide" then
-        manualStatusVisible = false
-        db.showStatus = false
-        UpdateStatus()
-        SyncWindowVisibilityCheckboxes()
-    elseif command == "ofi" then
-        SetConfiguredName("ofiName", argument, "Ofi")
-    elseif command == "offering" then
-        SetConfiguredName("offeringName", argument, "Offering")
+        SetHelperWindowVisible(false)
+    elseif command == "settings" then
+        OpenAddonSettings()
     elseif command == "mix" then
         Print("Mixing is automatic: missing achievement variants, then one of each reagent, then any available reagent.")
     elseif command == "debug" then
@@ -2433,7 +2435,7 @@ local function HandleSlashCommand(message)
             "; input=" .. (inputLocked and "locked" or "active") ..
             "; reagents=" .. reagentTotal .. "/" .. reagentNeeded ..
             "; rewards=" .. rewardTotalCount .. " in " .. rewardVariantCount .. " variants" ..
-            "; next: " .. (STEP_TEXT[state] or state) .. "."
+            "; next: " .. GetStepText(state) .. "."
         )
     else
         PrintHelp()
