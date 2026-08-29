@@ -145,6 +145,7 @@ local rewardItemID
 local rewardItemCounts = {}
 local rewardTotalCount = 0
 local rewardVariantCount = 0
+local pendingStatusUpdate = false
 local lastFailureMessage
 local lastFailureTime = 0
 local lastTargetDebugSignature
@@ -689,6 +690,15 @@ UpdateStatus = function(note)
     if not statusFrame or not db then
         return
     end
+
+    -- The status frame contains a secure reward button, so changing the
+    -- frame's visibility is protected while in combat.
+    if InCombatLockdown() then
+        pendingStatusUpdate = true
+        return
+    end
+
+    pendingStatusUpdate = false
 
     if not db.enabled or manualStatusVisible == false or
         (db.showStatus and not playerNearOfi) then
@@ -2511,6 +2521,9 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         end
         if pendingRewardUpdate then
             UpdateRewardButton()
+        end
+        if pendingStatusUpdate then
+            UpdateStatus()
         end
     elseif event == "GOSSIP_SHOW" then
         RefreshOfiProximity(false)
