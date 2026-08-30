@@ -9,6 +9,7 @@ read_globals = {
     "AchievementFrame_SelectAchievement",
     "AchievementFrame_ToggleAchievementFrame",
     "C_Container",
+    "C_CreatureInfo",
     "C_GossipInfo",
     "C_Item",
     "C_Map",
@@ -54,6 +55,7 @@ read_globals = {
     "SettingsPanel",
     "UIParent",
     "UnitExists",
+    "UnitGUID",
     "UnitIsVisible",
     "UnitName",
 }

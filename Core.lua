@@ -1,7 +1,6 @@
 local ADDON_NAME = ...
 
 local QUEST_ID = 97016
-local QUEST_TITLE = "Mixing Mysteries" -- Fallback only; quest ID is locale-independent.
 local MIX_MASTER_ACHIEVEMENT_ID = 63432
 local MIX_MASTER_ACHIEVEMENT_NAME = "Mysterious Mix Master"
 -- These IDs are locale-independent.  Macro targeting still requires the
@@ -81,7 +80,7 @@ local STATE = {
 }
 
 local DEFAULTS = {
-    configVersion = 8,
+    configVersion = 9,
     debug = false,
     enabled = true,
     mixPreference = "balanced",
@@ -156,6 +155,7 @@ local lastFailureTime = 0
 local lastTargetDebugSignature
 local lastTargetDebugTime = 0
 local lastReagentWarning
+local lastIngredientIdentificationWarning
 local playerNearOfi = false
 local proximityElapsed = 0
 local UpdateRewardButton
@@ -361,6 +361,7 @@ local function ResetMixProgress()
     ofiGossipSelections = 0
     selectedIngredientOptions = {}
     selectedIngredientIDs = {}
+    lastIngredientIdentificationWarning = nil
     pendingGossipSelection = nil
     gossipTransitionToken = gossipTransitionToken + 1
     offeringTransitionToken = offeringTransitionToken + 1
@@ -655,22 +656,58 @@ local function FormatReagentCounts(counts)
     return table.concat(parts, "  |  ")
 end
 
-local function GetIngredientName(ingredient)
+local function GetLocalizedItemName(itemID)
     if C_Item and C_Item.GetItemNameByID then
-        local name = C_Item.GetItemNameByID(ingredient.itemID)
-        if name then
+        local name = C_Item.GetItemNameByID(itemID)
+        if type(name) == "string" then
             return name
         end
     end
 
     if C_Item and C_Item.GetItemInfo then
-        local name = C_Item.GetItemInfo(ingredient.itemID)
-        if name then
+        local itemInfo = C_Item.GetItemInfo(itemID)
+        local name = type(itemInfo) == "table" and (itemInfo.itemName or itemInfo.name) or itemInfo
+        if type(name) == "string" then
             return name
         end
     end
 
+    return nil
+end
+
+local function GetLocalizedIngredientName(ingredient)
+    return GetLocalizedItemName(ingredient.itemID)
+end
+
+local function GetIngredientName(ingredient)
+    local localizedName = GetLocalizedIngredientName(ingredient)
+    if localizedName then
+        return localizedName
+    end
+
     return ingredient.name
+end
+
+local function RequestIngredientItemData()
+    if not C_Item or not C_Item.RequestLoadItemDataByID then
+        return
+    end
+
+    for _, ingredient in ipairs(INGREDIENTS) do
+        if not GetLocalizedIngredientName(ingredient) then
+            C_Item.RequestLoadItemDataByID(ingredient.itemID)
+        end
+    end
+end
+
+local function AreLocalizedIngredientNamesReady()
+    for _, ingredient in ipairs(INGREDIENTS) do
+        if not GetLocalizedIngredientName(ingredient) then
+            return false
+        end
+    end
+
+    return true
 end
 
 local function GetAuctionatorShoppingListImport()
@@ -773,15 +810,7 @@ local function RefreshOfiProximity(forceStatusUpdate)
 end
 
 local function GetOfferingItemName(itemID)
-    if C_Item and C_Item.GetItemNameByID then
-        return C_Item.GetItemNameByID(itemID)
-    end
-
-    if C_Item and C_Item.GetItemInfo then
-        return C_Item.GetItemInfo(itemID)
-    end
-
-    return nil
+    return GetLocalizedItemName(itemID)
 end
 
 local function ShowRewardTooltip(button)
@@ -1633,16 +1662,11 @@ local function IsMixingQuestID(questID)
     return questID == QUEST_ID or questID == activeQuestID
 end
 
-local function IsMixingQuestTitle(title)
-    local ok, matches = pcall(function()
-        return title == QUEST_TITLE
-    end)
-    return ok and matches
-end
-
 local function FindMixingQuest(quests)
     for _, quest in ipairs(quests or {}) do
-        if IsMixingQuestID(quest.questID) or IsMixingQuestTitle(quest.title) then
+        -- Quest titles are localized. The quest ID is stable on every client
+        -- and is the only identity used for quest selection and recovery.
+        if IsMixingQuestID(quest.questID) then
             if quest.questID then
                 activeQuestID = quest.questID
             end
@@ -1653,37 +1677,22 @@ end
 
 local function GetIngredientOptionInfo(options, index)
     local option = options and options[index]
-    local optionCount = options and #options or 0
     local optionName = option and (option.name or option.title) or "<unknown>"
     local optionNameText = SafeString(optionName)
-    local looksLikeIngredient = optionNameText:find("<Offer", 1, true) ~= nil
-    local fallbackIngredient = optionCount >= 3 and index <= math.min(REQUIRED_INGREDIENTS, optionCount - 1)
-    return option, optionNameText, looksLikeIngredient or fallbackIngredient
+    return option, optionNameText
 end
 
 local function GetIngredientIdentity(optionNameText)
     local optionText = SafeString(optionNameText)
-    local lowerOptionText = optionText:lower()
 
     for _, ingredient in ipairs(INGREDIENTS) do
-        local localizedName
-        if C_Item and C_Item.GetItemNameByID then
-            localizedName = C_Item.GetItemNameByID(ingredient.itemID)
-        end
-        if (localizedName and optionText:find(localizedName, 1, true)) or
-            lowerOptionText:find(ingredient.name:lower(), 1, true) then
+        local localizedName = GetLocalizedIngredientName(ingredient)
+        if localizedName and optionText:find(localizedName, 1, true) then
             return ingredient.itemID
         end
     end
 
-    local normalized = lowerOptionText
-        :gsub("^%s*<%s*offer%s+", "")
-        :gsub("[>%.%s]+$", "")
-        :gsub("^an?%s+", "")
-        :gsub("[^%w]+", "-")
-        :gsub("^-+", "")
-        :gsub("-+$", "")
-    return normalized ~= "" and normalized or nil
+    return nil
 end
 
 local function GetIngredientOptionKey(option, optionNameText, index)
@@ -1747,14 +1756,14 @@ end
 local function GetIngredientCandidates(options)
     local candidates = {}
     for index = 1, #(options or {}) do
-        local option, optionName, isIngredient = GetIngredientOptionInfo(options, index)
-        if isIngredient then
-            local itemID = GetIngredientIdentity(optionName)
+        local option, optionName = GetIngredientOptionInfo(options, index)
+        local itemID = GetIngredientIdentity(optionName)
+        if type(itemID) == "number" then
             candidates[#candidates + 1] = {
                 index = index,
                 option = option,
                 name = optionName,
-                itemID = type(itemID) == "number" and itemID or nil,
+                itemID = itemID,
             }
         end
     end
@@ -1828,17 +1837,68 @@ local function SelectNextOfiOption(options)
 
     options = options or GetCurrentGossipOptions()
     local optionCount = options and #options or 0
+    if not AreLocalizedIngredientNamesReady() then
+        RequestIngredientItemData()
+        local warningSignature = "item-data:" .. optionCount
+        if warningSignature ~= lastIngredientIdentificationWarning then
+            Print(
+                "Waiting for localized reagent item data before selecting an option."
+            )
+            lastIngredientIdentificationWarning = warningSignature
+        end
+        UpdateStatus("waiting for localized reagent data")
+        return false
+    end
+
     local optionIndex = 1
-    local option, optionNameText, isIngredient = GetIngredientOptionInfo(options, optionIndex)
+    local option, optionNameText = GetIngredientOptionInfo(options, optionIndex)
     local candidates = GetIngredientCandidates(options)
     local selectedCandidate, plannedRecipe = ChooseIngredientCandidate(candidates)
     if selectedCandidate then
         optionIndex = selectedCandidate.index
         option = selectedCandidate.option
         optionNameText = selectedCandidate.name
-        isIngredient = true
+    elseif optionCount == 1 and ofiGossipSelections == 0 then
+        -- The initial page has a single, non-ingredient option that opens the
+        -- ingredient list. Its text is localized, so its position is the only
+        -- safe invariant we use.
+        local isIngredient = false
+        local optionKey = GetIngredientOptionKey(option, optionNameText, optionIndex)
+        local optionWasSelected = selectedIngredientOptions[optionKey]
+        Debug(
+            "Gossip options=1, selecting the locale-independent preparatory option."
+        )
+        if option and option.gossipOptionID and C_GossipInfo.SelectOption then
+            local ok, err = pcall(C_GossipInfo.SelectOption, option.gossipOptionID)
+            if not ok then
+                Print("Could not select Ofi's gossip option " .. optionIndex .. ": " .. tostring(err))
+                return false
+            end
+            return true, isIngredient, optionNameText, optionIndex, optionKey, optionWasSelected, nil
+        elseif GossipFrame and GossipFrame.SelectGossipOption then
+            local ok, err = pcall(GossipFrame.SelectGossipOption, GossipFrame, optionIndex)
+            if not ok then
+                Print("Could not select Ofi's gossip option " .. optionIndex .. ": " .. tostring(err))
+                return false
+            end
+            return true, isIngredient, optionNameText, optionIndex, optionKey, optionWasSelected, nil
+        end
+        return false
+    else
+        RequestIngredientItemData()
+        local warningSignature = optionCount .. ":" .. ofiGossipSelections
+        if warningSignature ~= lastIngredientIdentificationWarning then
+            Print(
+                "Could not identify Ofi's localized reagent options yet. " ..
+                "Waiting for item data instead of selecting a reagent at random."
+            )
+            lastIngredientIdentificationWarning = warningSignature
+        end
+        UpdateStatus("waiting for localized reagent data")
+        return false
     end
 
+    local isIngredient = true
     local optionKey = GetIngredientOptionKey(option, optionNameText, optionIndex)
     local optionWasSelected = selectedIngredientOptions[optionKey]
     local ingredientID = isIngredient and GetIngredientIdentity(optionNameText)
@@ -2572,6 +2632,7 @@ local function Initialize()
     CreateStatusFrame()
     CreateMinimapButton()
     CreateSettingsPanel()
+    RequestIngredientItemData()
     UpdateAchievementStatus()
     RemoveLegacyActionMacro()
     db.rewardItemID = nil
@@ -2688,6 +2749,9 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         end
         if INGREDIENT_ITEM_ID_SET[itemID] then
             UpdateReagentStatus(false)
+            if db.enabled and state == STATE.INTERACT_OFI and HasOpenOfiGossip() then
+                C_Timer.After(0, HandleGossipShow)
+            end
         end
     elseif event == "PLAYER_TARGET_CHANGED" then
         HandleTargetChanged()
