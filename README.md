@@ -32,6 +32,13 @@ names. Click it to open a preselected Auctionator shopping-list import; press
 fewer than the required remaining reagents are available and pauses the gossip
 sequence until enough reagents are in the bags. Adding the missing reagents
 resumes an open Ofi dialog automatically. The panel is visible by default.
+
+## Language support
+
+Targeting is locale-aware. The helper identifies Ofi and the Mysterious
+Offering by their NPC IDs, learns the localized names from the active WoW
+client, and uses those names for its protected target macros. This works with
+every game client locale without maintaining translated NPC-name tables.
 In the addon settings, you can show or hide it manually and optionally show it
 automatically when you are near Ofi the Sly.
 

@@ -1,9 +1,14 @@
 local ADDON_NAME = ...
 
 local QUEST_ID = 97016
-local QUEST_TITLE = "Mixing Mysteries"
+local QUEST_TITLE = "Mixing Mysteries" -- Fallback only; quest ID is locale-independent.
 local MIX_MASTER_ACHIEVEMENT_ID = 63432
 local MIX_MASTER_ACHIEVEMENT_NAME = "Mysterious Mix Master"
+-- These IDs are locale-independent.  Macro targeting still requires the
+-- display name, so they are used to discover and validate the client-localized
+-- names before the secure target macros are updated.
+local OFI_NPC_ID = 254599
+local MYSTERIOUS_OFFERING_NPC_ID = 267451
 local REQUIRED_INGREDIENTS = 3
 local MAX_GOSSIP_PAGE_ATTEMPTS = 8
 local LEGACY_ACTION_MACRO_NAME = "MixMystHelper"
@@ -76,7 +81,7 @@ local STATE = {
 }
 
 local DEFAULTS = {
-    configVersion = 7,
+    configVersion = 8,
     debug = false,
     enabled = true,
     mixPreference = "balanced",
@@ -164,6 +169,8 @@ local ScheduleQuestStateRecovery
 local SetHelperWindowVisible
 local OpenAddonSettings
 local UpdateStatusActionButton
+local UpdateTargetMacros
+local RefreshLocalizedTargetNames
 
 local function Print(message)
     DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. message)
@@ -391,8 +398,33 @@ local function NamesMatch(actual, expected)
     return actual == expected
 end
 
+local function GetUnitNPCID(unit)
+    if not UnitExists(unit) or not UnitGUID or not C_CreatureInfo or
+        not C_CreatureInfo.GetCreatureID then
+        return nil
+    end
+
+    return C_CreatureInfo.GetCreatureID(UnitGUID(unit))
+end
+
+local function GetExpectedNPCID(expected)
+    if db and expected == db.ofiName then
+        return OFI_NPC_ID
+    elseif db and expected == db.offeringName then
+        return MYSTERIOUS_OFFERING_NPC_ID
+    end
+end
+
 local function UnitMatches(unit, expected)
-    return UnitExists(unit) and NamesMatch(UnitName(unit), expected)
+    if not UnitExists(unit) then
+        return false
+    end
+
+    -- A GUID-derived NPC ID remains available when the localized display name
+    -- is unknown or Blizzard marks it as a secret value.
+    local expectedNPCID = GetExpectedNPCID(expected)
+    return (expectedNPCID and GetUnitNPCID(unit) == expectedNPCID) or
+        NamesMatch(UnitName(unit), expected)
 end
 
 local function IsOfiContext()
@@ -732,6 +764,7 @@ local function RefreshOfiProximity(forceStatusUpdate)
         return
     end
 
+    RefreshLocalizedTargetNames()
     local wasNearOfi = playerNearOfi
     playerNearOfi = IsPlayerNearOfi()
     if forceStatusUpdate or playerNearOfi ~= wasNearOfi then
@@ -1378,6 +1411,16 @@ local function IsConfiguredActionPhase(down)
 end
 
 local function TargetButtonClicked(expected, nextState)
+    -- On a non-English client the first press can discover the localized name
+    -- through the nearby/interactable unit or nameplate. The refreshed macro
+    -- then targets it on the next press (or immediately when it was already
+    -- discovered by a proximity update).
+    RefreshLocalizedTargetNames()
+    if nextState == STATE.INTERACT_OFI then
+        expected = db.ofiName
+    elseif nextState == STATE.INTERACT_OFFERING then
+        expected = db.offeringName
+    end
     local isOpenOfiGossip = nextState == STATE.INTERACT_OFI and HasOpenOfiGossip()
     local actualTarget = SafeString(UnitName("target"))
     local debugSignature = expected .. ":" .. actualTarget .. ":" .. SafeString(isOpenOfiGossip)
@@ -1444,7 +1487,7 @@ local function CreateTargetButtons()
     end)
 end
 
-local function UpdateTargetMacros()
+UpdateTargetMacros = function()
     if InCombatLockdown() then
         pendingBinding = true
         UpdateStatus()
@@ -1453,6 +1496,62 @@ local function UpdateTargetMacros()
 
     targetOfiButton:SetAttribute("macrotext", GetTargetMacroText(db.ofiName, false))
     targetOfferingButton:SetAttribute("macrotext", GetTargetMacroText(db.offeringName, true))
+end
+
+local function GetNameplateUnit(nameplate)
+    local unit = nameplate.namePlateUnitToken or nameplate.unitToken
+    if not unit and nameplate.GetUnit then
+        unit = nameplate:GetUnit()
+    end
+    return unit
+end
+
+local function LearnLocalizedTargetName(unit, npcID, field)
+    if GetUnitNPCID(unit) ~= npcID then
+        return false
+    end
+
+    local name = UnitName(unit)
+    if issecretvalue and issecretvalue(name) then
+        return false
+    end
+
+    name = CleanName(name)
+    if name == "" or name == db[field] then
+        return false
+    end
+
+    db[field] = name
+    if targetOfiButton and targetOfferingButton then
+        UpdateTargetMacros()
+    end
+    Debug("Learned localized " .. field .. " from NPC " .. npcID .. ": " .. name)
+    return true
+end
+
+-- NPC IDs let the addon learn the names supplied by the active game client.
+-- This avoids shipping guessed translations and covers every locale Blizzard
+-- supports, including newly added locales.
+RefreshLocalizedTargetNames = function()
+    if not db then
+        return
+    end
+
+    local directUnits = { "npc", "target", "mouseover", "softinteract", "anyinteract" }
+    for _, unit in ipairs(directUnits) do
+        LearnLocalizedTargetName(unit, OFI_NPC_ID, "ofiName")
+        LearnLocalizedTargetName(unit, MYSTERIOUS_OFFERING_NPC_ID, "offeringName")
+    end
+
+    if C_NamePlate and C_NamePlate.GetNamePlates then
+        for _, nameplate in ipairs(C_NamePlate.GetNamePlates() or {}) do
+            local unit = GetNameplateUnit(nameplate)
+            if unit then
+                LearnLocalizedTargetName(unit, OFI_NPC_ID, "ofiName")
+                LearnLocalizedTargetName(unit, MYSTERIOUS_OFFERING_NPC_ID, "offeringName")
+            end
+        end
+    end
 end
 
 ApplyBinding = function()
@@ -2169,6 +2268,7 @@ local function HandleQuestFinished()
 end
 
 local function HandleTargetChanged()
+    RefreshLocalizedTargetNames()
     if UnitMatches("target", db.offeringName) and IsQuestOnLog() then
         SetState(STATE.INTERACT_OFFERING)
         return
