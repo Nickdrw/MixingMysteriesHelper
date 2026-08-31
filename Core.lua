@@ -1858,15 +1858,16 @@ local function SelectNextOfiOption(options)
         optionIndex = selectedCandidate.index
         option = selectedCandidate.option
         optionNameText = selectedCandidate.name
-    elseif optionCount == 1 and ofiGossipSelections == 0 then
-        -- The initial page has a single, non-ingredient option that opens the
-        -- ingredient list. Its text is localized, so its position is the only
-        -- safe invariant we use.
+    elseif ofiGossipSelections == 0 and optionCount > 0 then
+        -- Before any reagent has been submitted, Ofi's normal quest-progress
+        -- page opens the ingredient list through its first option. Its text
+        -- and the number of informational alternatives are localized, but the
+        -- progression option remains first on every client.
         local isIngredient = false
         local optionKey = GetIngredientOptionKey(option, optionNameText, optionIndex)
         local optionWasSelected = selectedIngredientOptions[optionKey]
         Debug(
-            "Gossip options=1, selecting the locale-independent preparatory option."
+            "Selecting the locale-independent preparatory gossip option."
         )
         if option and option.gossipOptionID and C_GossipInfo.SelectOption then
             local ok, err = pcall(C_GossipInfo.SelectOption, option.gossipOptionID)
