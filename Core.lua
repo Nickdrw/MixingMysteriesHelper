@@ -405,7 +405,15 @@ local function GetUnitNPCID(unit)
         return nil
     end
 
-    return C_CreatureInfo.GetCreatureID(UnitGUID(unit))
+    local creatureGUID = UnitGUID(unit)
+    -- Midnight can return a secret GUID for units such as mouseover. Passing
+    -- that value to GetCreatureID is forbidden from addon code, so leave NPC
+    -- identification to the non-secret name/map/gossip fallbacks instead.
+    if issecretvalue and issecretvalue(creatureGUID) then
+        return nil
+    end
+
+    return C_CreatureInfo.GetCreatureID(creatureGUID)
 end
 
 local function GetExpectedNPCID(expected)
