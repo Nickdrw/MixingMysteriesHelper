@@ -11,6 +11,7 @@
   - **Minor bump** increments only the final component: `2.3.0` -> `2.3.1`. A patch bump is an accepted synonym.
 - When the user names a bump type, apply the mapping above exactly; do not reinterpret it based on the perceived size of the changes.
 - When the user requests a version bump without naming a bump type or exact version, ask which version to use.
+- Keep user-facing fixes and features in their own clean commit before making a release commit. A version-bump commit must change only release/version metadata; never fold implementation changes into `chore: bump addon version to X.Y.Z`.
 - Version bump commits use `chore: bump addon version to X.Y.Z`.
 - Release tags are annotated and named `vX.Y.Z`; use `git tag -a vX.Y.Z -m "Release vX.Y.Z"`.
 - This addon publishes releases to CurseForge only; do not configure or use Wago publishing.

@@ -134,6 +134,10 @@ local questAcceptPending = false
 local ofiGossipSelections = 0
 local selectedIngredientOptions = {}
 local selectedIngredientIDs = {}
+-- The ingredient picker always presents the three reagent actions in the
+-- stable order in INGREDIENTS, followed by its non-reagent exit action.  This
+-- is game data/order, not translated display text.
+local ingredientPickerOpen = false
 local pendingGossipSelection
 local gossipTransitionToken = 0
 local offeringTransitionToken = 0
@@ -361,6 +365,7 @@ local function ResetMixProgress()
     ofiGossipSelections = 0
     selectedIngredientOptions = {}
     selectedIngredientIDs = {}
+    ingredientPickerOpen = false
     lastIngredientIdentificationWarning = nil
     pendingGossipSelection = nil
     gossipTransitionToken = gossipTransitionToken + 1
@@ -667,7 +672,13 @@ end
 local function GetLocalizedItemName(itemID)
     if C_Item and C_Item.GetItemNameByID then
         local name = C_Item.GetItemNameByID(itemID)
-        if type(name) == "string" then
+        -- An uncached localized item can briefly be returned as an empty
+        -- string. Lua treats that as truthy, which would make
+        -- optionText:find("", 1, true) match every gossip option as the first
+        -- reagent. Treat it as unavailable rather than using it to identify a
+        -- gossip row.
+        if type(name) == "string" and name:match("%S") and
+            not (issecretvalue and issecretvalue(name)) then
             return name
         end
     end
@@ -675,7 +686,8 @@ local function GetLocalizedItemName(itemID)
     if C_Item and C_Item.GetItemInfo then
         local itemInfo = C_Item.GetItemInfo(itemID)
         local name = type(itemInfo) == "table" and (itemInfo.itemName or itemInfo.name) or itemInfo
-        if type(name) == "string" then
+        if type(name) == "string" and name:match("%S") and
+            not (issecretvalue and issecretvalue(name)) then
             return name
         end
     end
@@ -1685,17 +1697,18 @@ end
 
 local function GetIngredientOptionInfo(options, index)
     local option = options and options[index]
-    local optionName = option and (option.name or option.title) or "<unknown>"
-    local optionNameText = SafeString(optionName)
-    return option, optionNameText
+    return option, option and (option.name or option.title) or "<unknown>"
 end
 
-local function GetIngredientIdentity(optionNameText)
-    local optionText = SafeString(optionNameText)
+local function GetIngredientIdentity(optionName)
+    if type(optionName) ~= "string" or not optionName:match("%S") or
+        (issecretvalue and issecretvalue(optionName)) then
+        return nil
+    end
 
     for _, ingredient in ipairs(INGREDIENTS) do
         local localizedName = GetLocalizedIngredientName(ingredient)
-        if localizedName and optionText:find(localizedName, 1, true) then
+        if localizedName and optionName:find(localizedName, 1, true) then
             return ingredient.itemID
         end
     end
@@ -1713,7 +1726,7 @@ local function GetIngredientOptionKey(option, optionNameText, index)
         return "id:" .. SafeString(option.gossipOptionID)
     end
 
-    return "name:" .. optionNameText .. ":" .. index
+    return "name:" .. SafeString(optionNameText) .. ":" .. index
 end
 
 local function GetGossipPageSignature(options)
@@ -1763,9 +1776,30 @@ end
 
 local function GetIngredientCandidates(options)
     local candidates = {}
+    local pickerIngredients = INGREDIENTS
+    if ingredientPickerOpen then
+        -- Some game states hide reagent rows the player cannot submit. When
+        -- that happens, preserve the same stable order while removing absent
+        -- reagents from the positional map; the final row remains the exit.
+        local availableCounts, _, distinct = GetReagentSnapshot()
+        if distinct < #INGREDIENTS and #(options or {}) == distinct + 1 then
+            pickerIngredients = {}
+            for _, ingredient in ipairs(INGREDIENTS) do
+                if (availableCounts[ingredient.itemID] or 0) > 0 then
+                    pickerIngredients[#pickerIngredients + 1] = ingredient
+                end
+            end
+        end
+    end
+
     for index = 1, #(options or {}) do
         local option, optionName = GetIngredientOptionInfo(options, index)
-        local itemID = GetIngredientIdentity(optionName)
+        -- Do not use translated text once the picker is open. The picker
+        -- order is identical in every client locale: Pearl, Bone, Feather,
+        -- then an exit option. This also avoids secret/unavailable gossip
+        -- labels being converted to the same string and all matching Pearl.
+        local ingredient = ingredientPickerOpen and pickerIngredients[index]
+        local itemID = ingredient and ingredient.itemID or GetIngredientIdentity(optionName)
         if type(itemID) == "number" then
             candidates[#candidates + 1] = {
                 index = index,
@@ -1799,7 +1833,10 @@ local function ChooseAchievementRecipe(candidates)
             local requirements = GetIngredientRequirements(recipe.ingredients)
             local canMakeRecipe = true
             for itemID, requiredCount in pairs(requirements) do
-                if (availableCounts[itemID] or 0) < requiredCount or
+                -- Submitted reagents are already committed to this offering,
+                -- so include them when deciding whether the recipe remains
+                -- possible after the bag count has decreased.
+                if (availableCounts[itemID] or 0) + (alreadySelected[itemID] or 0) < requiredCount or
                     (alreadySelected[itemID] or 0) > requiredCount then
                     canMakeRecipe = false
                     break
@@ -1828,14 +1865,25 @@ local function ChooseIngredientCandidate(candidates)
         return achievementCandidate, recipe
     end
 
+    local availableCounts = GetReagentSnapshot()
     local alreadySelected = GetIngredientRequirements(selectedIngredientIDs)
     for _, candidate in ipairs(candidates) do
-        if candidate.itemID and not alreadySelected[candidate.itemID] then
+        if candidate.itemID and not alreadySelected[candidate.itemID] and
+            (availableCounts[candidate.itemID] or 0) > 0 then
             return candidate
         end
     end
 
-    return candidates[1]
+    -- With no one-each option left, use any reagent that is actually still in
+    -- the bags. This is the final fallback, rather than blindly picking the
+    -- first visible gossip row.
+    for _, candidate in ipairs(candidates) do
+        if candidate.itemID and (availableCounts[candidate.itemID] or 0) > 0 then
+            return candidate
+        end
+    end
+
+    return nil
 end
 
 local function SelectNextOfiOption(options)
@@ -1845,7 +1893,11 @@ local function SelectNextOfiOption(options)
 
     options = options or GetCurrentGossipOptions()
     local optionCount = options and #options or 0
-    if not AreLocalizedIngredientNamesReady() then
+    local localizedNamesReady = AreLocalizedIngredientNamesReady()
+    -- The preparatory page and a picker we opened ourselves both have a
+    -- locale-independent route. Do not let a missing/secret localized name
+    -- block either of them.
+    if not ingredientPickerOpen and not localizedNamesReady and ofiGossipSelections > 0 then
         RequestIngredientItemData()
         local warningSignature = "item-data:" .. optionCount
         if warningSignature ~= lastIngredientIdentificationWarning then
@@ -1860,7 +1912,8 @@ local function SelectNextOfiOption(options)
 
     local optionIndex = 1
     local option, optionNameText = GetIngredientOptionInfo(options, optionIndex)
-    local candidates = GetIngredientCandidates(options)
+    local candidates = (ingredientPickerOpen or localizedNamesReady) and
+        GetIngredientCandidates(options) or {}
     local selectedCandidate, plannedRecipe = ChooseIngredientCandidate(candidates)
     if selectedCandidate then
         optionIndex = selectedCandidate.index
@@ -1883,14 +1936,14 @@ local function SelectNextOfiOption(options)
                 Print("Could not select Ofi's gossip option " .. optionIndex .. ": " .. tostring(err))
                 return false
             end
-            return true, isIngredient, optionNameText, optionIndex, optionKey, optionWasSelected, nil
+            return true, isIngredient, optionNameText, optionIndex, optionKey, optionWasSelected, nil, true
         elseif GossipFrame and GossipFrame.SelectGossipOption then
             local ok, err = pcall(GossipFrame.SelectGossipOption, GossipFrame, optionIndex)
             if not ok then
                 Print("Could not select Ofi's gossip option " .. optionIndex .. ": " .. tostring(err))
                 return false
             end
-            return true, isIngredient, optionNameText, optionIndex, optionKey, optionWasSelected, nil
+            return true, isIngredient, optionNameText, optionIndex, optionKey, optionWasSelected, nil, true
         end
         return false
     else
@@ -1910,13 +1963,14 @@ local function SelectNextOfiOption(options)
     local isIngredient = true
     local optionKey = GetIngredientOptionKey(option, optionNameText, optionIndex)
     local optionWasSelected = selectedIngredientOptions[optionKey]
-    local ingredientID = isIngredient and GetIngredientIdentity(optionNameText)
+    local ingredientID = selectedCandidate and selectedCandidate.itemID or
+        GetIngredientIdentity(optionNameText)
     ingredientID = type(ingredientID) == "number" and ingredientID or nil
 
     Debug(
         "Gossip options=" .. optionCount ..
         ", chosenIndex=" .. optionIndex ..
-        ", chosen=\"" .. optionNameText .. "\"" ..
+        ", chosen=\"" .. SafeString(optionNameText) .. "\"" ..
         ", optionID=" .. SafeString(option and option.gossipOptionID) ..
         ", ingredient=" .. SafeString(isIngredient) ..
         ", recipe=" .. (plannedRecipe and plannedRecipe.name or "one-each/fallback") ..
@@ -1947,7 +2001,7 @@ local function SelectNextOfiOption(options)
             return false
         end
 
-        return true, isIngredient, optionNameText, optionIndex, optionKey, optionWasSelected, ingredientID
+        return true, isIngredient, optionNameText, optionIndex, optionKey, optionWasSelected, ingredientID, false
     end
 
     if GossipFrame and GossipFrame.SelectGossipOption then
@@ -1974,7 +2028,7 @@ local function SelectNextOfiOption(options)
             return false
         end
 
-        return true, isIngredient, optionNameText, optionIndex, optionKey, optionWasSelected, ingredientID
+        return true, isIngredient, optionNameText, optionIndex, optionKey, optionWasSelected, ingredientID, false
     end
 
     return false
@@ -2019,7 +2073,8 @@ local function ScheduleGossipContinuation(
     isIngredient,
     optionKey,
     optionWasSelected,
-    ingredientID
+    ingredientID,
+    opensIngredientPicker
 )
     if gossipAttemptPageSignature == pageSignature then
         gossipPageAttempts = gossipPageAttempts + 1
@@ -2037,6 +2092,7 @@ local function ScheduleGossipContinuation(
         optionKey = optionKey,
         optionWasSelected = optionWasSelected,
         ingredientID = ingredientID,
+        opensIngredientPicker = opensIngredientPicker,
         progressBefore = isIngredient and (ofiGossipSelections - 1) or ofiGossipSelections,
     }
     pendingGossipSelection = selection
@@ -2076,6 +2132,9 @@ local function ScheduleGossipContinuation(
             )
         else
             Debug("Gossip options changed without GOSSIP_SHOW; resuming automation.")
+            if selection.opensIngredientPicker then
+                ingredientPickerOpen = true
+            end
             if selection.isIngredient and ofiGossipSelections >= REQUIRED_INGREDIENTS then
                 AdvanceAfterFinalIngredient("a gossip page change")
                 return
@@ -2166,13 +2225,17 @@ HandleGossipShow = function()
         pendingGossipSelection = nil
         gossipTransitionToken = gossipTransitionToken + 1
         Debug("Gossip page changed; continuing the serialized selection sequence.")
+        if completedSelection.opensIngredientPicker then
+            ingredientPickerOpen = true
+        end
         if completedSelection.isIngredient and ofiGossipSelections >= REQUIRED_INGREDIENTS then
             AdvanceAfterFinalIngredient("GOSSIP_SHOW")
             return
         end
     end
 
-    local selected, isIngredient, optionName, optionIndex, optionKey, optionWasSelected, ingredientID =
+    local selected, isIngredient, optionName, optionIndex, optionKey, optionWasSelected, ingredientID,
+        opensIngredientPicker =
         SelectNextOfiOption(options)
     if selected then
         ScheduleGossipContinuation(
@@ -2181,12 +2244,13 @@ HandleGossipShow = function()
             isIngredient,
             optionKey,
             optionWasSelected,
-            ingredientID
+            ingredientID,
+            opensIngredientPicker
         )
         if not isIngredient then
             UpdateStatus("opening ingredient list")
             Debug(
-                "Preparatory option " .. optionIndex .. " selected: \"" .. optionName ..
+                "Preparatory option " .. optionIndex .. " selected: \"" .. SafeString(optionName) ..
                 "\". Waiting for the next GOSSIP_SHOW."
             )
         elseif ofiGossipSelections >= REQUIRED_INGREDIENTS then
@@ -2338,6 +2402,15 @@ end
 
 local function HandleTargetChanged()
     RefreshLocalizedTargetNames()
+    if UnitMatches("target", db.ofiName) or UnitMatches("target", db.offeringName) then
+        -- Targeting either quest NPC reopens the panel in proximity mode, so
+        -- it remains visible while the player is near Ofi after the target is
+        -- cleared and hides again after leaving the area.
+        manualStatusVisible = true
+        db.showStatus = true
+        SyncWindowVisibilityCheckboxes()
+    end
+
     if UnitMatches("target", db.offeringName) and IsQuestOnLog() then
         SetState(STATE.INTERACT_OFFERING)
         return
@@ -2764,7 +2837,9 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         end
     elseif event == "PLAYER_TARGET_CHANGED" then
         HandleTargetChanged()
-        RefreshOfiProximity(false)
+        -- Refresh visibility even when proximity itself did not change: a
+        -- valid target enables the helper's proximity-only display mode.
+        RefreshOfiProximity(true)
     elseif event == "NAME_PLATE_UNIT_ADDED" or event == "NAME_PLATE_UNIT_REMOVED" or
         event == "UPDATE_MOUSEOVER_UNIT" then
         RefreshOfiProximity(false)

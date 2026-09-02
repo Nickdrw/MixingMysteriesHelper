@@ -40,10 +40,11 @@ Offering by their NPC IDs, learns the localized names from the active WoW
 client, and uses those names for its protected target macros. This works with
 every game client locale without maintaining translated NPC-name tables.
 
-Reagent selection uses the localized item names returned by the client for the
-three stable ingredient IDs. The helper requests missing item data and pauses
-instead of guessing if it cannot identify a gossip option, so it cannot submit
-the first visible reagent repeatedly because of a language mismatch.
+Reagent selection uses the ingredient picker's stable game-defined option order
+(Pearl, Bone, Feather) to map each choice to its item ID. It does not depend on
+the translated gossip label, so achievement and balanced-mix priorities work in
+every client language. The helper uses localized item names only as a fallback
+when recovering an already-open picker it did not open itself.
 In the addon settings, you can show or hide it manually and optionally show it
 automatically when you are near Ofi the Sly.
 
